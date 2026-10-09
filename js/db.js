@@ -2,11 +2,13 @@
  * Stockage local persistant (IndexedDB). Rien n'est envoyé sur Internet.
  *
  * Magasins (tables) :
- *   events       { id, name, startDate, endDate, description, archived, initialStock: {ingredientId: qté}, createdAt }
+ *   events       { id, name, startDate, endDate, description, surveyQuestion, archived, initialStock: {ingredientId: qté}, createdAt }
  *   categories   { id, name, order }
- *   products     { id, name, price (centimes), categoryId, active, order, recipe: [{ ingredientId, qty }] }
+ *   products     { id, name, price (centimes), categoryId, active, order, recipe: [{ ingredientId, qty }],
+ *                  menu?: [{ label, options: [productId] }] }   (menu : le client choisit une option par étape)
  *   ingredients  { id, name, unit, purchasePrice (centimes|null), purchaseQty (nombre|null) }
  *   sales        { id, eventId, number, createdAt, total, payment, status, lines: [...], deviceId, cancelledAt, cancelReason }
+ *   answers      { id, eventId, saleId, answer ('oui'|'non'), question, createdAt }   (sondage)
  *   settings     { key, value }   (currentEventId, pin, deviceId, lastBackupAt)
  *
  * Une vente et ses lignes sont écrites dans UNE SEULE transaction : soit tout est
@@ -17,8 +19,8 @@
   'use strict';
 
   const NAME = 'caisse-buvette';
-  const VERSION = 1;
-  const STORES = ['events', 'categories', 'products', 'ingredients', 'sales', 'settings'];
+  const VERSION = 2; // v2 : ajout du magasin « answers » (sondage)
+  const STORES = ['events', 'categories', 'products', 'ingredients', 'sales', 'answers', 'settings'];
   const APP_ID = 'caisse-buvette';
   const BACKUP_FORMAT = 1;
   let dbPromise = null;
@@ -35,6 +37,9 @@
         }
         if (!db.objectStoreNames.contains('sales')) {
           db.createObjectStore('sales', { keyPath: 'id' }).createIndex('eventId', 'eventId');
+        }
+        if (!db.objectStoreNames.contains('answers')) {
+          db.createObjectStore('answers', { keyPath: 'id' }).createIndex('eventId', 'eventId');
         }
         if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
       };
@@ -93,10 +98,20 @@
     for (const o of objs) s.put(o);
   });
 
+  /** Enregistre plusieurs tables en une seule transaction : { products: [...], categories: [...] } */
+  const putRecords = map => run(Object.keys(map), 'readwrite', tx => {
+    for (const [store, objs] of Object.entries(map)) for (const o of objs) tx.objectStore(store).put(o);
+  });
+
   const del = (store, id) => run([store], 'readwrite', tx => { tx.objectStore(store).delete(id); });
 
   const salesByEvent = eventId => run(['sales'], 'readonly', (tx, done) => {
     const r = tx.objectStore('sales').index('eventId').getAll(eventId);
+    r.onsuccess = () => done(r.result);
+  });
+
+  const answersByEvent = eventId => run(['answers'], 'readonly', (tx, done) => {
+    const r = tx.objectStore('answers').index('eventId').getAll(eventId);
     r.onsuccess = () => done(r.result);
   });
 
@@ -128,21 +143,23 @@
     r.onsuccess = () => {
       const cur = r.result;
       if (!cur) return;
-      if (cur.value.lines.some(l => l.productId === productId)) return done(true);
+      if (cur.value.lines.some(l => l.productId === productId || (l.choices || []).some(c => c.productId === productId))) return done(true);
       cur.continue();
     };
   });
 
-  /** Supprime un événement ET toutes ses ventes (une seule transaction). */
-  const deleteEvent = eventId => run(['events', 'sales'], 'readwrite', tx => {
+  /** Supprime un événement, ses ventes et ses réponses au sondage (une seule transaction). */
+  const deleteEvent = eventId => run(['events', 'sales', 'answers'], 'readwrite', tx => {
     tx.objectStore('events').delete(eventId);
-    const r = tx.objectStore('sales').index('eventId').openKeyCursor(IDBKeyRange.only(eventId));
-    r.onsuccess = () => {
-      const cur = r.result;
-      if (!cur) return;
-      tx.objectStore('sales').delete(cur.primaryKey);
-      cur.continue();
-    };
+    for (const store of ['sales', 'answers']) {
+      const r = tx.objectStore(store).index('eventId').openKeyCursor(IDBKeyRange.only(eventId));
+      r.onsuccess = () => {
+        const cur = r.result;
+        if (!cur) return;
+        tx.objectStore(store).delete(cur.primaryKey);
+        cur.continue();
+      };
+    }
   });
 
   async function getSettings() {
@@ -215,7 +232,7 @@
   }
 
   root.DB = {
-    open, getAll, get, put, putMany, del, salesByEvent, countSalesByEvent, addSale,
+    open, getAll, get, put, putMany, putRecords, del, salesByEvent, answersByEvent, countSalesByEvent, addSale,
     isProductSold, deleteEvent, getSettings, setSetting, exportAll, checkBackup, importAll, clearAll
   };
 })(self);

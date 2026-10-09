@@ -186,3 +186,29 @@ table.t { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
   .two { grid-template-columns: 1fr; }
   .tb { padding: 8px 9px; font-size: 14px; }
 }
+
+/* Détail d'un menu dans le panier */
+.cdet { font-size: 13px; font-weight: 500; color: var(--muted); line-height: 1.2; }
+
+/* Choix d'un menu, étape par étape */
+.picker { padding: 8px 0; }
+.pk-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: var(--dark); color: #fff; padding: 10px 12px; border-radius: 10px; font-size: 18px; }
+.pk-done { margin: 8px 2px 0; font-weight: 700; color: var(--ok); }
+.pk-title { font-size: 22px !important; text-transform: none !important; letter-spacing: 0 !important; color: var(--fg) !important; margin: 10px 2px 8px !important; }
+
+/* Sondage après une vente */
+.survey { margin-top: 6px; padding: 8px 10px; border: 2px solid var(--primary); border-radius: 8px; background: #eff6ff; }
+.sq { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.sbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sbtn { min-height: 46px; font-size: 18px; font-weight: 900; border: 2px solid var(--primary); border-radius: 8px; background: #fff; color: var(--primary); }
+.sbtn.sel { background: var(--primary); color: #fff; }
+.sthx { margin-top: 4px; font-size: 14px; color: var(--muted); }
+
+/* Éditeur de menu (administration) */
+.mstep { border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin-bottom: 8px; background: #f9fafb; }
+.mhead { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.form .mhead input { margin: 0; flex: 1; }
+.mopts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; }
+.mgroup b { display: block; font-size: 13px; text-transform: uppercase; color: var(--muted); margin: 6px 0 2px; }
+.form .mgroup .check { margin: 0 0 2px; font-weight: 500; min-height: 36px; }
+.pk-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }

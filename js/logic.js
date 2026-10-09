@@ -122,19 +122,41 @@
   }
 
   // ---------- Panier ----------
-  // Une ligne de panier : { productId, name, unitPrice (centimes), qty }
+  // Une ligne de panier : { key, productId, name, unitPrice (centimes), qty, choices? }
+  // Pour un menu, `choices` = [{ step, productId, name }] (ex. sandwich, boisson, crêpe) :
+  // deux menus avec des choix différents sont deux lignes distinctes.
 
-  function cartAdd(cart, product) {
-    const i = cart.findIndex(l => l.productId === product.id);
+  const isMenu = p => !!(p && Array.isArray(p.menu) && p.menu.length);
+
+  function lineKey(productId, choices) {
+    return choices && choices.length ? productId + '|' + choices.map(c => c.productId).join('|') : productId;
+  }
+  const keyOf = l => l.key || lineKey(l.productId, l.choices);
+
+  function cartAdd(cart, product, choices) {
+    const key = lineKey(product.id, choices);
+    const i = cart.findIndex(l => keyOf(l) === key);
     if (i >= 0) return cart.map((l, k) => (k === i ? { ...l, qty: l.qty + 1 } : l));
-    return [...cart, { productId: product.id, name: product.name, unitPrice: product.price, qty: 1 }];
+    const line = { key, productId: product.id, name: product.name, unitPrice: product.price, qty: 1 };
+    if (choices && choices.length) line.choices = choices.map(c => ({ step: c.step, productId: c.productId, name: c.name }));
+    return [...cart, line];
   }
 
-  function cartChange(cart, productId, delta) {
+  function cartChange(cart, key, delta) {
     return cart
-      .map(l => (l.productId === productId ? { ...l, qty: l.qty + delta } : l))
+      .map(l => (keyOf(l) === key ? { ...l, qty: l.qty + delta } : l))
       .filter(l => l.qty > 0);
   }
+
+  /** Ligne de vente → ligne de panier (pour corriger une vente). */
+  const lineToCart = l => {
+    const c = { key: lineKey(l.productId, l.choices), productId: l.productId, name: l.name, unitPrice: l.unitPrice, qty: l.qty };
+    if (l.choices && l.choices.length) c.choices = l.choices;
+    return c;
+  };
+
+  /** "Sandwich poulet + Orangina + Crêpe Nutella" */
+  const choicesText = l => (l.choices || []).map(c => c.name).join(' + ');
 
   function cartTotal(cart) {
     return cart.reduce((s, l) => s + l.unitPrice * l.qty, 0);
@@ -155,7 +177,9 @@
     const lines = cart.map(l => {
       if (!Number.isInteger(l.qty) || l.qty <= 0) throw new Error(`Quantité invalide pour ${l.name}.`);
       if (!Number.isInteger(l.unitPrice) || l.unitPrice < 0) throw new Error(`Prix invalide pour ${l.name}.`);
-      return { productId: l.productId, name: l.name, unitPrice: l.unitPrice, qty: l.qty, total: l.unitPrice * l.qty };
+      const line = { productId: l.productId, name: l.name, unitPrice: l.unitPrice, qty: l.qty, total: l.unitPrice * l.qty };
+      if (l.choices && l.choices.length) line.choices = l.choices.map(c => ({ step: c.step, productId: c.productId, name: c.name }));
+      return line;
     });
     return {
       id: id || uuid(),
@@ -199,7 +223,8 @@
    * complete = false si un ingrédient de la recette n'a pas de prix d'achat.
    */
   function productCost(product, ingById) {
-    if (!product || !product.recipe || product.recipe.length === 0) return null;
+    // Le coût d'un menu dépend des choix du client : il est compté dans le bilan, pas ici.
+    if (!product || isMenu(product) || !product.recipe || product.recipe.length === 0) return null;
     let cost = 0;
     const missing = [];
     for (const r of product.recipe) {
@@ -231,12 +256,19 @@
 
   // ---------- Statistiques ----------
 
+  /** Composition d'un menu : "Sandwich : jambon, poulet ; Boisson : …" */
+  function menuText(product, prodById) {
+    if (!isMenu(product)) return '';
+    return product.menu.map(s => `${s.label} : ${s.options.map(id => prodById[id] ? prodById[id].name : null).filter(Boolean).join(', ')}`).join(' ; ');
+  }
+
   /**
    * Bilan d'un événement. Les ventes annulées sont exclues de tous les totaux.
+   * Quantités : « vendu seul » + « dans les menus » = total réellement servi.
    * La consommation théorique d'ingrédients est calculée avec les recettes ACTUELLES
-   * (ainsi, une recette saisie ou corrigée après coup est prise en compte).
+   * (ainsi, une recette saisie ou corrigée après coup est prise en compte), menus compris.
    */
-  function computeStats({ sales, products, ingredients, initialStock }) {
+  function computeStats({ sales, products, ingredients, initialStock, answers }) {
     const prodById = indexById(products);
     const ingById = indexById(ingredients);
     const stock = initialStock || {};
@@ -262,25 +294,36 @@
       perDay.set(day, d);
 
       for (const l of s.lines) {
-        const cur = perProduct.get(l.productId) || { productId: l.productId, name: l.name, qty: 0, revenue: 0 };
+        const cur = row(l.productId, l.name);
         cur.qty += l.qty;
         cur.revenue += l.total;
-        perProduct.set(l.productId, cur);
+        for (const c of l.choices || []) row(c.productId, c.name).inMenu += l.qty;
       }
+    }
+    function row(id, name) {
+      let r = perProduct.get(id);
+      if (!r) perProduct.set(id, r = { productId: id, name, qty: 0, inMenu: 0, revenue: 0 });
+      return r;
     }
 
     const productsSold = [...perProduct.values()].map(p => {
       const prod = prodById[p.productId];
-      return { ...p, name: prod ? prod.name : p.name };
-    }).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name, 'fr'));
+      return { ...p, name: prod ? prod.name : p.name, total: p.qty + p.inMenu };
+    }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'fr'));
 
     const consumed = new Map();
     for (const p of perProduct.values()) {
       const prod = prodById[p.productId];
       if (!prod || !prod.recipe) continue;
       for (const r of prod.recipe) {
-        consumed.set(r.ingredientId, (consumed.get(r.ingredientId) || 0) + r.qty * p.qty);
+        consumed.set(r.ingredientId, (consumed.get(r.ingredientId) || 0) + r.qty * (p.qty + p.inMenu));
       }
+    }
+
+    const survey = { yes: 0, no: 0 };
+    for (const a of answers || []) {
+      if (a.answer === 'oui') survey.yes++;
+      else if (a.answer === 'non') survey.no++;
     }
 
     let hasCostData = false;
@@ -317,7 +360,8 @@
       ingredients: ingredientRows,
       hasCostData,
       ingredientCost: hasCostData ? ingredientCost : null,
-      margin: hasCostData ? revenue - ingredientCost : null
+      margin: hasCostData ? revenue - ingredientCost : null,
+      survey
     };
   }
 
@@ -327,8 +371,8 @@
    * Prépare les feuilles du classeur Excel d'un événement.
    * Format de cellule : valeur simple, ou { v, s } avec s = bold|money|money4|date|time|datetime|pct.
    */
-  function buildExportSheets({ event, sales, products, categories, ingredients, now }) {
-    const st = computeStats({ sales, products, ingredients, initialStock: event.initialStock });
+  function buildExportSheets({ event, sales, products, categories, ingredients, answers, now }) {
+    const st = computeStats({ sales, products, ingredients, initialStock: event.initialStock, answers });
     const catById = indexById(categories);
     const ingById = indexById(ingredients);
     const prodById = indexById(products);
@@ -359,12 +403,18 @@
       bilan.push(['Coût théorique des ingrédients', eur(st.ingredientCost)]);
       bilan.push(['Marge brute estimée', eur(st.margin)]);
     }
+    if (event.surveyQuestion || st.survey.yes || st.survey.no) {
+      const n = st.survey.yes + st.survey.no;
+      bilan.push([], H(['Sondage', event.surveyQuestion || '']));
+      bilan.push(['Réponses OUI', st.survey.yes, n ? { v: Math.round(st.survey.yes / n * 10000) / 10000, s: 'pct' } : null]);
+      bilan.push(['Réponses NON', st.survey.no, n ? { v: Math.round(st.survey.no / n * 10000) / 10000, s: 'pct' } : null]);
+    }
     bilan.push([], H(['Jour', 'Ventes', "Chiffre d'affaires", 'Espèces', 'Carte']));
     for (const d of st.days) {
       bilan.push([{ v: dayToDate(d.day), s: 'date' }, d.count, eur(d.revenue), eur(d.especes || 0), eur(d.carte || 0)]);
     }
-    bilan.push([], H(['Produit', 'Quantité vendue', "Chiffre d'affaires"]));
-    for (const p of st.products) bilan.push([p.name, p.qty, eur(p.revenue)]);
+    bilan.push([], H(['Produit', 'Total servi', 'Vendu seul', 'Dans les menus', "Chiffre d'affaires"]));
+    for (const p of st.products) bilan.push([p.name, p.total, p.qty, p.inMenu, eur(p.revenue)]);
 
     const ventes = [H(['N° vente', 'ID unique', 'Date', 'Heure', 'Événement', 'Montant', 'Mode de paiement', 'Statut', 'Nb articles', 'Annulée le', 'Raison annulation'])];
     for (const s of sorted) {
@@ -378,17 +428,17 @@
       ]);
     }
 
-    const lignes = [H(['N° vente', 'ID unique', 'Date', 'Heure', 'Produit', 'Catégorie', 'Quantité', 'Prix unitaire', 'Total ligne', 'Statut vente'])];
+    const lignes = [H(['N° vente', 'ID unique', 'Date', 'Heure', 'Produit', 'Catégorie', 'Quantité', 'Prix unitaire', 'Total ligne', 'Statut vente', 'Détail du menu'])];
     for (const s of sorted) {
       const d = new Date(s.createdAt);
       for (const l of s.lines) {
         const prod = prodById[l.productId];
         const cat = prod && catById[prod.categoryId];
-        lignes.push([s.number, s.id, { v: d, s: 'date' }, { v: d, s: 'time' }, l.name, cat ? cat.name : null, l.qty, eur(l.unitPrice), eur(l.total), status(s)]);
+        lignes.push([s.number, s.id, { v: d, s: 'date' }, { v: d, s: 'time' }, l.name, cat ? cat.name : null, l.qty, eur(l.unitPrice), eur(l.total), status(s), choicesText(l) || null]);
       }
     }
 
-    const produits = [H(['Produit', 'Catégorie', 'Prix de vente', 'Coût de revient', 'Marge brute', 'Marge %', 'Recette', 'Remarque', 'Actif', 'Quantité vendue', "Chiffre d'affaires"])];
+    const produits = [H(['Produit', 'Catégorie', 'Prix de vente', 'Coût de revient', 'Marge brute', 'Marge %', 'Recette / composition', 'Remarque', 'Actif', 'Total servi', 'Vendu seul', 'Dans les menus', "Chiffre d'affaires"])];
     const sortedProducts = [...products].sort((a, b) => {
       const ca = catById[a.categoryId], cb = catById[b.categoryId];
       return (ca ? ca.order : 1e9) - (cb ? cb.order : 1e9) || (a.order || 0) - (b.order || 0);
@@ -399,10 +449,10 @@
       produits.push([
         p.name, catById[p.categoryId] ? catById[p.categoryId].name : null, eur(p.price),
         m ? eur4(m.cost) : null, m ? eur4(m.margin) : null, m && m.pct != null ? { v: Math.round(m.pct * 10000) / 10000, s: 'pct' } : null,
-        recipeText(p, ingById) || null,
+        [recipeText(p, ingById), menuText(p, prodById)].filter(Boolean).join(' | ') || null,
         m && !m.complete ? "Prix d'achat manquant : " + m.missing.join(', ') : null,
         p.active !== false ? 'Oui' : 'Non',
-        sold ? sold.qty : 0, eur(sold ? sold.revenue : 0)
+        sold ? sold.total : 0, sold ? sold.qty : 0, sold ? sold.inMenu : 0, eur(sold ? sold.revenue : 0)
       ]);
     }
 
@@ -416,10 +466,10 @@
     }
 
     return [
-      { name: 'Bilan', rows: bilan, widths: [36, 22, 18, 14, 14] },
+      { name: 'Bilan', rows: bilan, widths: [36, 22, 18, 16, 18] },
       { name: 'Ventes', rows: ventes, widths: [10, 38, 12, 8, 28, 12, 16, 10, 11, 17, 30], freeze: true },
-      { name: 'Lignes de vente', rows: lignes, widths: [10, 38, 12, 8, 28, 18, 10, 13, 12, 12], freeze: true },
-      { name: 'Produits', rows: produits, widths: [28, 18, 13, 15, 13, 10, 50, 30, 7, 15, 17], freeze: true },
+      { name: 'Lignes de vente', rows: lignes, widths: [10, 38, 12, 8, 22, 18, 10, 13, 12, 12, 50], freeze: true },
+      { name: 'Produits', rows: produits, widths: [24, 18, 13, 15, 13, 10, 60, 30, 7, 12, 12, 15, 17], freeze: true },
       { name: 'Ingrédients', rows: ingr, widths: [24, 12, 13, 22, 15, 13, 17, 13, 22], freeze: true }
     ];
   }
@@ -429,9 +479,9 @@
     uuid, indexById, roundQty,
     parseDecimal, parseEuros, formatEuros, formatEurosPrecise, formatQty, formatPct,
     localDay, dayToDate, formatDate, formatTime, formatDayLabel, formatPeriod, fileStamp, slug,
-    cartAdd, cartChange, cartTotal,
+    isMenu, lineKey, cartAdd, cartChange, cartTotal, lineToCart, choicesText,
     buildSale, cancelSale, isCancelled,
-    ingredientUnitCost, productCost, productMargin, recipeText,
+    ingredientUnitCost, productCost, productMargin, recipeText, menuText,
     computeStats, buildExportSheets
   };
 });

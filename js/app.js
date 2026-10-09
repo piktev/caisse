@@ -15,7 +15,7 @@
   // rechargée après chaque modification ; les ventes sont lues directement en base.
   const S = {
     settings: {}, events: [], categories: [], products: [], ingredients: [],
-    cart: [], cartId: null, payment: null, saving: false, lastSaved: null,
+    cart: [], cartId: null, payment: null, saving: false, lastSaved: null, menuPick: null,
     unlocked: false, pinEntry: ''
   };
   let renderSeq = 0;
@@ -121,25 +121,75 @@
       </div>`;
       return;
     }
-    const groups = groupByCategory(S.products.filter(p => p.active !== false));
+    S.menuPick = null;
     app.innerHTML = `<div class="caisse">
       <header class="topbar">
         <div class="ev">${esc(ev.name)}</div>
         <button class="tb" data-action="go" data-to="ventes">Dernières ventes</button>
         <button class="tb" data-action="go" data-to="admin">⚙ Admin</button>
       </header>
-      <main class="products">
-        ${groups.length ? groups.map(g => `<section>
-          <h2>${esc(g.name)}</h2>
-          <div class="pgrid">${g.products.map(p => `<button class="pbtn c${g.color}" data-action="add" data-id="${p.id}">
-            <span class="pname">${esc(p.name)}</span><span class="pprice">${money(p.price)}</span>
-            <span class="pqty" data-qty="${p.id}" hidden></span></button>`).join('')}
-          </div></section>`).join('')
-        : `<p class="empty">Aucun produit actif.<br>Ajoutez des produits dans l'administration.</p>`}
-      </main>
+      <main class="products" id="products"></main>
       <aside class="cart" id="cart"></aside>
     </div>`;
+    updateProducts();
     updateCart();
+  }
+
+  const catColor = p => {
+    const i = S.categories.findIndex(c => c.id === p.categoryId);
+    return i < 0 ? 7 : i % 8;
+  };
+
+  function productButton(p, action, color) {
+    return `<button class="pbtn c${color}" data-action="${action}" data-id="${p.id}">
+      <span class="pname">${esc(p.name)}</span>${action === 'add' ? `<span class="pprice">${money(p.price)}</span>
+      <span class="pqty" data-qty="${p.id}" hidden></span>` : ''}</button>`;
+  }
+
+  /** Options encore disponibles (produits actifs) d'une étape de menu. */
+  const stepOptions = step => step.options.map(id => S.products.find(p => p.id === id)).filter(p => p && p.active !== false);
+
+  /** Grille des produits, ou choix pas à pas d'un menu (sandwich → boisson → crêpe). */
+  function updateProducts() {
+    const el = document.getElementById('products');
+    if (!el) return;
+    const mp = S.menuPick;
+    if (mp) {
+      const step = mp.product.menu[mp.step];
+      el.innerHTML = `<div class="picker">
+        <div class="pk-head"><b>${esc(mp.product.name)} — ${money(mp.product.price)}</b><span>Étape ${mp.step + 1} / ${mp.product.menu.length}</span></div>
+        <div class="pk-actions">
+          <button class="btn" data-action="pick-back">← Retour</button>
+          <button class="btn danger" data-action="pick-cancel">Annuler le menu</button>
+        </div>
+        ${mp.choices.length ? `<p class="pk-done">${mp.choices.map(c => `✓ ${esc(c.name)}`).join('<br>')}</p>` : ''}
+        <h2 class="pk-title">Choisir : ${esc(step.label)}</h2>
+        <div class="pgrid">${stepOptions(step).map(p => productButton(p, 'pick', catColor(p))).join('')}</div>
+      </div>`;
+      el.scrollTop = 0;
+      return;
+    }
+    const groups = groupByCategory(S.products.filter(p => p.active !== false));
+    el.innerHTML = groups.length ? groups.map(g => `<section>
+        <h2>${esc(g.name)}</h2>
+        <div class="pgrid">${g.products.map(p => productButton(p, 'add', g.color)).join('')}</div>
+      </section>`).join('')
+      : `<p class="empty">Aucun produit actif.<br>Ajoutez des produits dans l'administration.</p>`;
+  }
+
+  function addToCart(product, choices) {
+    if (!S.cart.length) S.cartId = L.uuid();
+    setCart(L.cartAdd(S.cart, product, choices));
+  }
+
+  /** Passe à l'étape suivante du menu (les étapes sans option disponible sont sautées). */
+  function advanceMenu() {
+    const mp = S.menuPick;
+    while (mp.step < mp.product.menu.length && !stepOptions(mp.product.menu[mp.step]).length) mp.step++;
+    if (mp.step < mp.product.menu.length) return updateProducts();
+    S.menuPick = null;
+    updateProducts();
+    addToCart(mp.product, mp.choices);
   }
 
   /** Met à jour uniquement le panier (la grille de produits garde sa position de défilement). */
@@ -155,23 +205,37 @@
         ? `<p class="saved" id="saved">✓ Vente n°${S.lastSaved.number} enregistrée — ${money(S.lastSaved.total)} (${L.PAYMENTS[S.lastSaved.payment]})</p>`
         : '<p class="hint">Touchez un produit pour l\'ajouter.</p>') : S.cart.map(l => `
         <div class="cline">
-          <div class="cname">${esc(l.name)}${l.qty > 1 ? ` <b class="x">×${l.qty}</b>` : ''}</div>
+          <div class="cname">${esc(l.name)}${l.qty > 1 ? ` <b class="x">×${l.qty}</b>` : ''}${l.choices ? `<div class="cdet">${esc(L.choicesText(l))}</div>` : ''}</div>
           <div class="camt">${money(l.unitPrice * l.qty)}</div>
-          <button class="qbtn" data-action="dec" data-id="${l.productId}" aria-label="Retirer un ${esc(l.name)}">−</button>
-          <button class="qbtn" data-action="inc" data-id="${l.productId}" aria-label="Ajouter un ${esc(l.name)}">+</button>
-        </div>`).join('')}</div>
+          <button class="qbtn" data-action="dec" data-id="${esc(l.key)}" aria-label="Retirer un ${esc(l.name)}">−</button>
+          <button class="qbtn" data-action="inc" data-id="${esc(l.key)}" aria-label="Ajouter un ${esc(l.name)}">+</button>
+        </div>`).join('')}${empty && S.lastSaved ? surveyBox() : ''}</div>
       <div class="cart-total"><span>TOTAL</span><span id="total">${money(L.cartTotal(S.cart))}</span></div>
       <div class="pay-row">
         ${Object.entries(L.PAYMENTS).map(([k, v]) => `<button class="pay ${S.payment === k ? 'sel' : ''}" data-action="pay" data-pay="${k}" ${empty || S.saving ? 'disabled' : ''}>${S.payment === k ? '✓ ' : ''}${v.toUpperCase()}</button>`).join('')}
       </div>
       <button class="validate" id="validate" data-action="validate" ${ready ? '' : 'disabled'}>${label}</button>`;
     for (const b of document.querySelectorAll('[data-qty]')) {
-      const l = S.cart.find(x => x.productId === b.dataset.qty);
-      b.hidden = !l;
-      b.textContent = l ? l.qty : '';
+      const q = S.cart.filter(x => x.productId === b.dataset.qty).reduce((n, x) => n + x.qty, 0);
+      b.hidden = !q;
+      b.textContent = q || '';
     }
     const lines = el.querySelector('.cart-lines');
-    lines.scrollTop = lines.scrollHeight;
+    lines.scrollTop = empty ? 0 : lines.scrollHeight;
+  }
+
+  /** Question de sondage affichée après chaque vente (si l'événement en a une). */
+  function surveyBox() {
+    const ev = currentEvent();
+    if (!ev || !ev.surveyQuestion) return '';
+    const a = S.lastSaved.answer;
+    return `<div class="survey">
+      <div class="sq">Sondage : ${esc(ev.surveyQuestion)}</div>
+      <div class="sbtns">
+        <button class="sbtn ${a === 'oui' ? 'sel' : ''}" data-action="survey" data-answer="oui">OUI</button>
+        <button class="sbtn ${a === 'non' ? 'sel' : ''}" data-action="survey" data-answer="non">NON</button>
+      </div>${a ? '<div class="sthx">Merci, réponse enregistrée.</div>' : ''}
+    </div>`;
   }
 
   function setCart(cart) {
@@ -259,7 +323,7 @@
       </table>
       <table class="t">
         <tr><th>Produit</th><th class="n">Qté</th><th class="n">Prix</th><th class="n">Total</th></tr>
-        ${sale.lines.map(l => `<tr><td>${esc(l.name)}</td><td class="n">${l.qty}</td><td class="n">${money(l.unitPrice)}</td><td class="n">${money(l.total)}</td></tr>`).join('')}
+        ${sale.lines.map(l => `<tr><td>${esc(l.name)}${l.choices ? `<div class="muted">${esc(L.choicesText(l))}</div>` : ''}</td><td class="n">${l.qty}</td><td class="n">${money(l.unitPrice)}</td><td class="n">${money(l.total)}</td></tr>`).join('')}
         <tr class="tot"><td colspan="3">TOTAL</td><td class="n">${money(sale.total)}</td></tr>
       </table>
       ${editable ? `<div class="actions">
@@ -287,7 +351,7 @@
     if (!confirm(`Corriger la vente n°${sale.number} (${money(sale.total)}) ?\n\nElle sera marquée ANNULÉE et ses produits remis dans le panier pour être ressaisis.`)) return;
     if (S.cart.length && !confirm('Le panier en cours sera remplacé. Continuer ?')) return;
     await DB.put('sales', L.cancelSale(sale, `Correction (ressaisie)`));
-    S.cart = sale.lines.map(l => ({ productId: l.productId, name: l.name, unitPrice: l.unitPrice, qty: l.qty }));
+    S.cart = sale.lines.map(L.lineToCart);
     S.cartId = L.uuid();
     S.payment = null;
     toast(`Vente n°${sale.number} annulée : corrigez le panier puis validez.`, 'ok', 4000);
@@ -422,6 +486,8 @@
         <label>Date de fin<input type="date" name="endDate" value="${esc(ev ? ev.endDate : today)}"></label>
       </div>
       <label>Description (facultatif)<textarea name="description" rows="2" maxlength="500">${esc(ev ? ev.description : '')}</textarea></label>
+      <label>Question de sondage (facultatif)<input name="surveyQuestion" maxlength="200" value="${esc(ev ? ev.surveyQuestion || '' : '')}" placeholder="ex. Seriez-vous intéressé(e) par un t-shirt de l'événement ?"></label>
+      <p class="muted">Si une question est saisie, elle s'affiche à la caisse après chaque vente avec deux boutons OUI / NON. Résultats dans le Bilan et l'export Excel.</p>
       ${ev ? '' : '<label class="check"><input type="checkbox" name="useNow" checked> Ouvrir cet événement en caisse</label>'}
       <fieldset><legend>Stock initial des ingrédients (facultatif)</legend>
         <p class="muted">Sert à calculer le stock théorique restant pour cet événement.</p>
@@ -449,10 +515,11 @@
       initialStock[i.id] = v;
     }
     const description = String(fd.get('description') || '').trim();
+    const surveyQuestion = String(fd.get('surveyQuestion') || '').trim();
     const old = f.dataset.id ? eventById(f.dataset.id) : null;
     const ev = old
-      ? { ...old, name, startDate, endDate, description, initialStock }
-      : { id: L.uuid(), name, startDate, endDate, description, initialStock, archived: false, createdAt: new Date().toISOString() };
+      ? { ...old, name, startDate, endDate, description, surveyQuestion, initialStock }
+      : { id: L.uuid(), name, startDate, endDate, description, surveyQuestion, initialStock, archived: false, createdAt: new Date().toISOString() };
     await DB.put('events', ev);
     if (!old && fd.get('useNow')) await DB.setSetting('currentEventId', ev.id);
     await loadAll();
@@ -479,13 +546,14 @@
     </div>`;
     const groups = groupByCategory(S.products);
     const prods = `<div class="card"><h2>Produits</h2>
-      <div class="toolbar"><button class="btn primary" data-action="go" data-to="admin/produit/new">+ Nouveau produit</button></div>
+      <div class="toolbar"><button class="btn primary" data-action="go" data-to="admin/produit/new">+ Nouveau produit</button>
+        <button class="btn" data-action="load-catalogue">Charger le catalogue Challenge Lamouret</button></div>
       ${groups.map(g => `<h3>${esc(g.name)}</h3>${g.products.map(p => {
         const m = L.productMargin(p, ib);
         const off = p.active === false;
         return `<div class="lrow ${off ? 'off' : ''}">
           <div class="grow"><b>${esc(p.name)}</b>${off ? ' <span class="tag">Désactivé</span>' : ''}
-            <div class="muted">${p.recipe && p.recipe.length ? `Recette : ${p.recipe.length} ingrédient(s)` : 'Pas de recette'}${showCost && m
+            <div class="muted">${L.isMenu(p) ? `Menu : ${p.menu.map(st => esc(st.label)).join(' + ')}` : p.recipe && p.recipe.length ? `Recette : ${p.recipe.length} ingrédient(s)` : 'Pas de recette'}${showCost && m
               ? ` · Coût ${money(m.cost)}${m.complete ? '' : ' (incomplet)'} · Marge ${money(m.margin)} (${L.formatPct(m.pct)})` : ''}</div></div>
           <b class="price">${money(p.price)}</b>
           <button class="btn sm" data-action="go" data-to="admin/produit/${p.id}">Modifier</button>
@@ -505,9 +573,21 @@
     </div>`;
   }
 
+  function menuStep(step) {
+    const sel = new Set(step ? step.options : []);
+    const choices = groupByCategory(S.products.filter(x => !L.isMenu(x)));
+    return `<div class="mstep">
+      <div class="mhead"><input class="mlabel" maxlength="30" placeholder="Nom de l'étape (ex. Boisson)" value="${esc(step ? step.label : '')}" aria-label="Nom de l'étape">
+        <button type="button" class="btn sm danger" data-action="mstep-remove" aria-label="Supprimer l'étape">✕</button></div>
+      <div class="mopts">${choices.map(g => `<div class="mgroup"><b>${esc(g.name)}</b>
+        ${g.products.map(o => `<label class="check"><input type="checkbox" value="${o.id}" ${sel.has(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')}</div>`).join('')}</div>
+    </div>`;
+  }
+
   function viewProductForm(id) {
     const p = id === 'new' ? null : S.products.find(x => x.id === id);
     if (id !== 'new' && !p) return '<p>Produit introuvable.</p>';
+    const menu = L.isMenu(p);
     return `<form class="form card" data-form="product" data-id="${p ? p.id : ''}">
       <h2>${p ? 'Modifier le produit' : 'Nouveau produit'}</h2>
       <label>Nom *<input name="name" required maxlength="40" value="${esc(p ? p.name : '')}" placeholder="ex. Sandwich jambon"></label>
@@ -519,7 +599,17 @@
         </select></label>
       </div>
       <label class="check"><input type="checkbox" name="active" ${!p || p.active !== false ? 'checked' : ''}> Produit actif (visible en caisse)</label>
+      <label>Type<select name="ptype" data-change="ptype">
+        <option value="simple">Produit simple</option>
+        <option value="menu" ${menu ? 'selected' : ''}>Menu (le client choisit à chaque étape)</option>
+      </select></label>
+      <fieldset id="menu-steps" ${menu ? '' : 'hidden'}><legend>Étapes du menu</legend>
+        <p class="muted">À la caisse, on choisit une option par étape (ex. Sandwich, puis Boisson, puis Crêpe). Les quantités et ingrédients des choix sont comptés automatiquement.</p>
+        <div id="msteps">${(menu ? p.menu : []).map(menuStep).join('')}</div>
+        <button type="button" class="btn sm" data-action="mstep-add">+ Ajouter une étape</button>
+      </fieldset>
       <fieldset><legend>Recette / composition (facultatif)</legend>
+        <p class="muted" id="menu-recipe-note" ${menu ? '' : 'hidden'}>Pour un menu : seulement ce qui est fixe (ex. 1 sachet de chips).</p>
         ${S.ingredients.length ? `<p class="muted">Quantité d'ingrédient utilisée pour UN produit vendu, dans l'unité de l'ingrédient.</p>
           <div id="recipe">${(p && p.recipe || []).map(recipeRow).join('')}</div>
           <button type="button" class="btn sm" data-action="recipe-add">+ Ajouter un ingrédient</button>`
@@ -565,8 +655,20 @@
     const price = L.parseEuros(fd.get('price'));
     if (price == null || Number.isNaN(price)) throw new Error('Prix de vente invalide (ex. 5 ou 2,50).');
     const recipe = readRecipe(fd);
+    let menu = null;
+    if (fd.get('ptype') === 'menu') {
+      menu = [...f.querySelectorAll('.mstep')].map(el => ({
+        label: el.querySelector('.mlabel').value.trim(),
+        options: [...el.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value)
+      }));
+      if (!menu.length) throw new Error('Ajoutez au moins une étape au menu.');
+      for (const st of menu) {
+        if (!st.label) throw new Error('Chaque étape du menu doit avoir un nom.');
+        if (!st.options.length) throw new Error(`Cochez au moins un choix pour l'étape « ${st.label} ».`);
+      }
+    }
     const old = f.dataset.id ? S.products.find(p => p.id === f.dataset.id) : null;
-    const data = { name, price, categoryId: fd.get('categoryId') || null, active: !!fd.get('active'), recipe };
+    const data = { name, price, categoryId: fd.get('categoryId') || null, active: !!fd.get('active'), recipe, menu };
     await DB.put('products', old ? { ...old, ...data } : { id: L.uuid(), order: Date.now(), ...data });
     await loadAll();
     toast('Produit enregistré.');
@@ -654,7 +756,9 @@
   async function viewBilan(eventId) {
     const ev = pickEvent(eventId);
     if (!ev) return noEvent;
-    const st = L.computeStats({ sales: await DB.salesByEvent(ev.id), products: S.products, ingredients: S.ingredients, initialStock: ev.initialStock });
+    const [sales, answers] = await Promise.all([DB.salesByEvent(ev.id), DB.answersByEvent(ev.id)]);
+    const st = L.computeStats({ sales, products: S.products, ingredients: S.ingredients, initialStock: ev.initialStock, answers });
+    const nAns = st.survey.yes + st.survey.no;
     const ings = st.ingredients.filter(r => r.consumed > 0 || r.initialStock != null);
     const kpi = (k, v, sub) => `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="muted">${sub}</div>` : ''}</div>`;
     return `${eventSelect(ev, 'bilan')}
@@ -671,10 +775,15 @@
         <tr><th>Jour</th><th class="n">Ventes</th><th class="n">Espèces</th><th class="n">Carte</th><th class="n">CA</th></tr>
         ${st.days.map(d => `<tr><td>${L.formatDayLabel(d.day)}</td><td class="n">${d.count}</td><td class="n">${money(d.especes || 0)}</td><td class="n">${money(d.carte || 0)}</td><td class="n">${money(d.revenue)}</td></tr>`).join('')}
       </table></div></div>` : ''}
-      <div class="card"><h2>Produits vendus</h2>${st.products.length ? `<table class="t">
-        <tr><th>Produit</th><th class="n">Quantité</th><th class="n">CA</th></tr>
-        ${st.products.map(p => `<tr><td>${esc(p.name)}</td><td class="n">${p.qty}</td><td class="n">${money(p.revenue)}</td></tr>`).join('')}
-      </table>` : '<p class="muted">Aucune vente.</p>'}</div>
+      ${ev.surveyQuestion || nAns ? `<div class="card"><h2>Sondage</h2><p>${esc(ev.surveyQuestion || '')}</p><table class="t">
+        <tr><td>OUI</td><td class="n">${st.survey.yes}</td><td class="n">${nAns ? L.formatPct(st.survey.yes / nAns) : '—'}</td></tr>
+        <tr><td>NON</td><td class="n">${st.survey.no}</td><td class="n">${nAns ? L.formatPct(st.survey.no / nAns) : '—'}</td></tr>
+      </table></div>` : ''}
+      <div class="card"><h2>Produits vendus</h2>${st.products.length ? `<div class="tscroll"><table class="t">
+        <tr><th>Produit</th><th class="n">Total servi</th><th class="n">dont menus</th><th class="n">CA</th></tr>
+        ${st.products.map(p => `<tr><td>${esc(p.name)}</td><td class="n">${p.total}</td><td class="n">${p.inMenu || ''}</td><td class="n">${p.revenue ? money(p.revenue) : ''}</td></tr>`).join('')}
+      </table></div><p class="muted">« Total servi » compte aussi les produits choisis dans les menus ; leur CA est compté sur la ligne du menu.</p>`
+      : '<p class="muted">Aucune vente.</p>'}</div>
       <div class="card"><h2>Consommation théorique des ingrédients</h2>${ings.length ? `<div class="tscroll"><table class="t">
         <tr><th>Ingrédient</th><th class="n">Consommé</th><th class="n">Stock initial</th><th class="n">Reste théorique</th></tr>
         ${ings.map(r => `<tr><td>${esc(r.name)}</td><td class="n">${L.formatQty(r.consumed)} ${esc(r.unit)}</td>
@@ -717,7 +826,7 @@
     if (!ev) return;
     const now = new Date();
     const sheets = L.buildExportSheets({
-      event: ev, sales: await DB.salesByEvent(ev.id), products: S.products,
+      event: ev, sales: await DB.salesByEvent(ev.id), answers: await DB.answersByEvent(ev.id), products: S.products,
       categories: S.categories, ingredients: S.ingredients, now
     });
     download(`caisse_${L.slug(ev.name)}_${L.fileStamp(now)}.xlsx`,
@@ -805,8 +914,34 @@
     add: el => {
       const p = S.products.find(x => x.id === el.dataset.id);
       if (!p || S.saving) return;
-      if (!S.cart.length) S.cartId = L.uuid();
-      setCart(L.cartAdd(S.cart, p));
+      if (L.isMenu(p)) {
+        S.menuPick = { product: p, step: 0, choices: [] };
+        return advanceMenu();
+      }
+      addToCart(p);
+    },
+    pick: el => {
+      const mp = S.menuPick, p = S.products.find(x => x.id === el.dataset.id);
+      if (!mp || !p) return;
+      mp.choices.push({ step: mp.product.menu[mp.step].label, stepIndex: mp.step, productId: p.id, name: p.name });
+      mp.step++;
+      advanceMenu();
+    },
+    'pick-back': () => {
+      const mp = S.menuPick;
+      if (!mp) return;
+      if (!mp.choices.length) { S.menuPick = null; return updateProducts(); }
+      mp.step = mp.choices.pop().stepIndex;
+      updateProducts();
+    },
+    'pick-cancel': () => { S.menuPick = null; updateProducts(); },
+    survey: async el => {
+      const sale = S.lastSaved, ev = currentEvent();
+      if (!sale || !ev) return;
+      const answer = el.dataset.answer;
+      // Une seule réponse par vente : toucher l'autre bouton corrige la réponse.
+      await DB.put('answers', { id: 'rep-' + sale.id, eventId: sale.eventId, saleId: sale.id, answer, question: ev.surveyQuestion, createdAt: new Date().toISOString() });
+      if (S.lastSaved === sale) { sale.answer = answer; updateCart(); }
     },
     inc: el => { if (!S.saving) setCart(L.cartChange(S.cart, el.dataset.id, +1)); },
     dec: el => { if (!S.saving) setCart(L.cartChange(S.cart, el.dataset.id, -1)); },
@@ -894,6 +1029,14 @@
     },
 
     // Produits
+    'load-catalogue': async () => {
+      if (!confirm('Ajouter le catalogue du Challenge Lamouret ?\n(produits et prix, menu, recettes des sandwichs, ingrédients, événement)\n\nLes éléments qui existent déjà (même nom) ne sont pas modifiés.')) return;
+      const n = await applyCatalogue();
+      toast(n ? `Catalogue chargé : ${n} élément(s) ajouté(s).` : 'Le catalogue est déjà complet.');
+      render();
+    },
+    'mstep-add': () => document.getElementById('msteps').insertAdjacentHTML('beforeend', menuStep(null)),
+    'mstep-remove': el => el.closest('.mstep').remove(),
     'recipe-add': () => {
       document.getElementById('recipe').insertAdjacentHTML('beforeend', recipeRow(null));
       const sel = document.querySelectorAll('#recipe select');
@@ -976,6 +1119,12 @@
   document.addEventListener('change', e => {
     const t = e.target;
     if (t.dataset.change === 'event-select') go(`admin/${t.dataset.tab}/${t.value}`);
+    else if (t.dataset.change === 'ptype') {
+      const menu = t.value === 'menu';
+      document.getElementById('menu-steps').hidden = !menu;
+      document.getElementById('menu-recipe-note').hidden = !menu;
+      if (menu && !document.querySelector('#msteps .mstep')) actions['mstep-add']();
+    }
     else if (t.dataset.change === 'import') importBackup(t).catch(showError);
   });
 
@@ -1011,6 +1160,16 @@
 
   // ---------- Démarrage ----------
 
+  /** Ajoute le catalogue Challenge Lamouret (sans rien écraser). Renvoie le nombre d'éléments ajoutés. */
+  async function applyCatalogue() {
+    const add = window.Catalogue.build({ events: S.events, categories: S.categories, products: S.products, ingredients: S.ingredients });
+    const n = add.events.length + add.categories.length + add.products.length + add.ingredients.length;
+    if (n) await DB.putRecords(add);
+    if (add.events.length && !currentEvent()) await DB.setSetting('currentEventId', add.events[0].id);
+    await loadAll();
+    return n;
+  }
+
   async function start() {
     try {
       await DB.open();
@@ -1019,6 +1178,8 @@
         await DB.setSetting('deviceId', L.uuid());
         await loadAll();
       }
+      // Premier lancement (base vide) : la buvette est prête à l'emploi.
+      if (!S.events.length && !S.categories.length && !S.products.length && !S.ingredients.length) await applyCatalogue();
     } catch (e) {
       app.innerHTML = `<div class="page"><h1>Stockage indisponible</h1><p class="error">${esc(e.message)}</p>
         <p>Vérifiez que vous n'êtes pas en navigation privée, puis rechargez la page.</p></div>`;
@@ -1028,6 +1189,13 @@
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
       navigator.serviceWorker.register('sw.js').catch(err => console.warn('Service worker :', err));
+      // Nouvelle version de l'application installée : on recharge si rien n'est en cours.
+      const hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController) return;
+        if (!S.cart.length && !S.saving && !document.querySelector('form[data-form]:not([data-form=category])')) location.reload();
+        else toast("Nouvelle version installée : elle sera active à la prochaine ouverture de l'application.", 'ok', 6000);
+      });
     }
     render();
   }

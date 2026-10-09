@@ -5,12 +5,13 @@
  * Lors d'une mise à jour des fichiers de l'application, changer VERSION pour que
  * les appareils téléchargent la nouvelle version (au lancement suivant).
  */
-const VERSION = 'caisse-v1';
+const VERSION = 'caisse-v2';
 const FILES = [
   './',
   './index.html',
   './css/style.css',
   './js/logic.js',
+  './js/catalogue.js',
   './js/xlsx.js',
   './js/db.js',
   './js/app.js',
