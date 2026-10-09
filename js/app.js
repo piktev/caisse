@@ -15,7 +15,7 @@
   // rechargée après chaque modification ; les ventes sont lues directement en base.
   const S = {
     settings: {}, events: [], categories: [], products: [], ingredients: [],
-    cart: [], cartId: null, payment: null, saving: false, lastSaved: null, menuPick: null,
+    cart: [], cartId: null, payment: null, survey: null, saving: false, lastSaved: null, menuPick: null,
     unlocked: false, pinEntry: ''
   };
   let renderSeq = 0;
@@ -197,8 +197,14 @@
     const el = document.getElementById('cart');
     if (!el) return;
     const empty = S.cart.length === 0;
-    const ready = !empty && S.payment && !S.saving;
-    const label = S.saving ? 'Enregistrement…' : (!empty && !S.payment) ? 'Choisir : Espèces ou Carte' : 'VALIDER LA VENTE';
+    const ev = currentEvent();
+    const question = ev && ev.surveyQuestion;
+    const needSurvey = !!question && !S.survey;
+    const ready = !empty && S.payment && !needSurvey && !S.saving;
+    const label = S.saving ? 'Enregistrement…'
+      : empty ? 'VALIDER LA VENTE'
+      : needSurvey ? 'Répondre au sondage'
+      : !S.payment ? 'Choisir : Espèces ou Carte' : 'VALIDER LA VENTE';
     el.innerHTML = `
       <div class="cart-head"><span>PANIER</span>${empty ? '' : '<button class="link" data-action="clear-cart">Vider le panier</button>'}</div>
       <div class="cart-lines">${empty ? (S.lastSaved
@@ -209,8 +215,12 @@
           <div class="camt">${money(l.unitPrice * l.qty)}</div>
           <button class="qbtn" data-action="dec" data-id="${esc(l.key)}" aria-label="Retirer un ${esc(l.name)}">−</button>
           <button class="qbtn" data-action="inc" data-id="${esc(l.key)}" aria-label="Ajouter un ${esc(l.name)}">+</button>
-        </div>`).join('')}${empty && S.lastSaved ? surveyBox() : ''}</div>
+        </div>`).join('')}</div>
       <div class="cart-total"><span>TOTAL</span><span id="total">${money(L.cartTotal(S.cart))}</span></div>
+      ${question ? `<div class="survey ${S.survey ? 'done' : ''}">
+        <div class="sq">${esc(question)}</div>
+        <div class="sbtns">${Object.entries(L.SURVEY).map(([k, v]) => `<button class="sbtn ${S.survey === k ? 'sel' : ''}" data-action="survey" data-answer="${k}" ${empty || S.saving ? 'disabled' : ''}>${S.survey === k ? '✓ ' : ''}${v.toUpperCase()}</button>`).join('')}</div>
+      </div>` : ''}
       <div class="pay-row">
         ${Object.entries(L.PAYMENTS).map(([k, v]) => `<button class="pay ${S.payment === k ? 'sel' : ''}" data-action="pay" data-pay="${k}" ${empty || S.saving ? 'disabled' : ''}>${S.payment === k ? '✓ ' : ''}${v.toUpperCase()}</button>`).join('')}
       </div>
@@ -224,24 +234,10 @@
     lines.scrollTop = empty ? 0 : lines.scrollHeight;
   }
 
-  /** Question de sondage affichée après chaque vente (si l'événement en a une). */
-  function surveyBox() {
-    const ev = currentEvent();
-    if (!ev || !ev.surveyQuestion) return '';
-    const a = S.lastSaved.answer;
-    return `<div class="survey">
-      <div class="sq">Sondage : ${esc(ev.surveyQuestion)}</div>
-      <div class="sbtns">
-        <button class="sbtn ${a === 'oui' ? 'sel' : ''}" data-action="survey" data-answer="oui">OUI</button>
-        <button class="sbtn ${a === 'non' ? 'sel' : ''}" data-action="survey" data-answer="non">NON</button>
-      </div>${a ? '<div class="sthx">Merci, réponse enregistrée.</div>' : ''}
-    </div>`;
-  }
-
   function setCart(cart) {
     S.cart = cart;
     S.lastSaved = null;
-    if (!cart.length) { S.payment = null; S.cartId = null; }
+    if (!cart.length) { S.payment = null; S.cartId = null; S.survey = null; }
     updateCart();
   }
 
@@ -254,11 +250,12 @@
     if (S.saving || !S.cart.length || !S.payment) return;
     const ev = currentEvent();
     if (!ev) return toast('Aucun événement ouvert.', 'err', 4000);
+    if (ev.surveyQuestion && !S.survey) return;
     S.saving = true;
     updateCart();
     let saved;
     try {
-      const sale = L.buildSale({ id: S.cartId || L.uuid(), eventId: ev.id, cart: S.cart, payment: S.payment, deviceId: S.settings.deviceId });
+      const sale = L.buildSale({ id: S.cartId || L.uuid(), eventId: ev.id, cart: S.cart, payment: S.payment, deviceId: S.settings.deviceId, survey: ev.surveyQuestion ? S.survey : null });
       saved = await DB.addSale(sale);
     } catch (e) {
       if (!(e && e.name === 'ConstraintError')) { // ConstraintError = ce panier est déjà enregistré
@@ -318,6 +315,7 @@
         <tr><th>Date</th><td>${L.formatDate(sale.createdAt)} à ${L.formatTime(sale.createdAt)}</td></tr>
         <tr><th>Événement</th><td>${esc(ev ? ev.name : '?')}</td></tr>
         <tr><th>Paiement</th><td>${L.PAYMENTS[sale.payment] || esc(sale.payment)}</td></tr>
+        ${sale.survey ? `<tr><th>Sondage</th><td>${L.SURVEY[sale.survey]}</td></tr>` : ''}
         ${off ? `<tr><th>Annulée le</th><td>${L.formatDate(sale.cancelledAt)} à ${L.formatTime(sale.cancelledAt)}</td></tr>
         <tr><th>Raison</th><td>${esc(sale.cancelReason || '—')}</td></tr>` : ''}
       </table>
@@ -354,6 +352,7 @@
     S.cart = sale.lines.map(L.lineToCart);
     S.cartId = L.uuid();
     S.payment = null;
+    S.survey = sale.survey || null;
     toast(`Vente n°${sale.number} annulée : corrigez le panier puis validez.`, 'ok', 4000);
     go('caisse');
   }
@@ -487,7 +486,7 @@
       </div>
       <label>Description (facultatif)<textarea name="description" rows="2" maxlength="500">${esc(ev ? ev.description : '')}</textarea></label>
       <label>Question de sondage (facultatif)<input name="surveyQuestion" maxlength="200" value="${esc(ev ? ev.surveyQuestion || '' : '')}" placeholder="ex. Seriez-vous intéressé(e) par un t-shirt de l'événement ?"></label>
-      <p class="muted">Si une question est saisie, elle s'affiche à la caisse après chaque vente avec deux boutons OUI / NON. Résultats dans le Bilan et l'export Excel.</p>
+      <p class="muted">Si une question est saisie, elle s'affiche à la caisse avant chaque validation, avec OUI / NON / DÉJÀ POSÉE (client qui revient). Laissez vide pour ne plus la poser. Résultats dans le Bilan et l'export Excel.</p>
       ${ev ? '' : '<label class="check"><input type="checkbox" name="useNow" checked> Ouvrir cet événement en caisse</label>'}
       <fieldset><legend>Stock initial des ingrédients (facultatif)</legend>
         <p class="muted">Sert à calculer le stock théorique restant pour cet événement.</p>
@@ -775,10 +774,11 @@
         <tr><th>Jour</th><th class="n">Ventes</th><th class="n">Espèces</th><th class="n">Carte</th><th class="n">CA</th></tr>
         ${st.days.map(d => `<tr><td>${L.formatDayLabel(d.day)}</td><td class="n">${d.count}</td><td class="n">${money(d.especes || 0)}</td><td class="n">${money(d.carte || 0)}</td><td class="n">${money(d.revenue)}</td></tr>`).join('')}
       </table></div></div>` : ''}
-      ${ev.surveyQuestion || nAns ? `<div class="card"><h2>Sondage</h2><p>${esc(ev.surveyQuestion || '')}</p><table class="t">
+      ${ev.surveyQuestion || nAns || st.survey.already ? `<div class="card"><h2>Sondage</h2><p>${esc(ev.surveyQuestion || '')}</p><table class="t">
         <tr><td>OUI</td><td class="n">${st.survey.yes}</td><td class="n">${nAns ? L.formatPct(st.survey.yes / nAns) : '—'}</td></tr>
         <tr><td>NON</td><td class="n">${st.survey.no}</td><td class="n">${nAns ? L.formatPct(st.survey.no / nAns) : '—'}</td></tr>
-      </table></div>` : ''}
+        <tr><td>Déjà posée (client revenu)</td><td class="n">${st.survey.already}</td><td></td></tr>
+      </table><p class="muted">Pourcentages calculés sur les OUI + NON.</p></div>` : ''}
       <div class="card"><h2>Produits vendus</h2>${st.products.length ? `<div class="tscroll"><table class="t">
         <tr><th>Produit</th><th class="n">Total servi</th><th class="n">dont menus</th><th class="n">CA</th></tr>
         ${st.products.map(p => `<tr><td>${esc(p.name)}</td><td class="n">${p.total}</td><td class="n">${p.inMenu || ''}</td><td class="n">${p.revenue ? money(p.revenue) : ''}</td></tr>`).join('')}
@@ -935,14 +935,7 @@
       updateProducts();
     },
     'pick-cancel': () => { S.menuPick = null; updateProducts(); },
-    survey: async el => {
-      const sale = S.lastSaved, ev = currentEvent();
-      if (!sale || !ev) return;
-      const answer = el.dataset.answer;
-      // Une seule réponse par vente : toucher l'autre bouton corrige la réponse.
-      await DB.put('answers', { id: 'rep-' + sale.id, eventId: sale.eventId, saleId: sale.id, answer, question: ev.surveyQuestion, createdAt: new Date().toISOString() });
-      if (S.lastSaved === sale) { sale.answer = answer; updateCart(); }
-    },
+    survey: el => { if (S.cart.length && !S.saving) { S.survey = el.dataset.answer; updateCart(); } },
     inc: el => { if (!S.saving) setCart(L.cartChange(S.cart, el.dataset.id, +1)); },
     dec: el => { if (!S.saving) setCart(L.cartChange(S.cart, el.dataset.id, -1)); },
     'clear-cart': () => { if (!S.saving) setCart([]); },
@@ -1177,6 +1170,12 @@
       if (!S.settings.deviceId) {
         await DB.setSetting('deviceId', L.uuid());
         await loadAll();
+      }
+      for (const e of S.events) {
+        if (window.Catalogue.OLD_QUESTIONS.includes(e.surveyQuestion)) {
+          await DB.put('events', { ...e, surveyQuestion: window.Catalogue.EVENT.surveyQuestion });
+          await loadAll();
+        }
       }
       // Premier lancement (base vide) : la buvette est prête à l'emploi.
       if (!S.events.length && !S.categories.length && !S.products.length && !S.ingredients.length) await applyCatalogue();

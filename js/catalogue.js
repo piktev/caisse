@@ -18,8 +18,10 @@
     startDate: '2026-10-10',
     endDate: '2026-10-11',
     description: 'Buvette Degré+ Saint-Fargeau-Ponthierry',
-    surveyQuestion: 'Seriez-vous intéressé(e) par un t-shirt du Challenge Lamouret (environ 15-20 €) ?'
+    surveyQuestion: "Seriez-vous intéressé(e) par un t-shirt du Challenge Lamouret l'année prochaine (environ 15-20 €) ?"
   };
+  // Ancienne formulation, remplacée automatiquement sur les appareils déjà installés
+  const OLD_QUESTIONS = ['Seriez-vous intéressé(e) par un t-shirt du Challenge Lamouret (environ 15-20 €) ?'];
 
   // [nom, unité]
   const INGREDIENTS = [
@@ -119,5 +121,5 @@
     return out;
   }
 
-  return { EVENT, INGREDIENTS, CATEGORIES, build };
+  return { EVENT, OLD_QUESTIONS, INGREDIENTS, CATEGORIES, build };
 });

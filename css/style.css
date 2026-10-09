@@ -197,11 +197,13 @@ table.t { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
 .pk-title { font-size: 22px !important; text-transform: none !important; letter-spacing: 0 !important; color: var(--fg) !important; margin: 10px 2px 8px !important; }
 
 /* Sondage après une vente */
-.survey { margin-top: 6px; padding: 8px 10px; border: 2px solid var(--primary); border-radius: 8px; background: #eff6ff; }
-.sq { font-weight: 700; font-size: 15px; margin-bottom: 6px; }
-.sbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.sbtn { min-height: 46px; font-size: 18px; font-weight: 900; border: 2px solid var(--primary); border-radius: 8px; background: #fff; color: var(--primary); }
+.survey { padding: 6px 8px; border: 2px solid var(--primary); border-radius: 8px; background: #eff6ff; }
+.survey.done { border-color: #93c5fd; }
+.sq { font-weight: 700; font-size: 14px; line-height: 1.25; margin-bottom: 6px; }
+.sbtns { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 6px; }
+.sbtn { min-height: 44px; font-size: 16px; font-weight: 900; border: 2px solid var(--primary); border-radius: 8px; background: #fff; color: var(--primary); padding: 0 4px; }
 .sbtn.sel { background: var(--primary); color: #fff; }
+.sbtn:disabled { opacity: .35; }
 .sthx { margin-top: 4px; font-size: 14px; color: var(--muted); }
 
 /* Éditeur de menu (administration) */

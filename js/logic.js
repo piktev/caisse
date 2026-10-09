@@ -14,6 +14,8 @@
   'use strict';
 
   const PAYMENTS = { especes: 'Espèces', carte: 'Carte' };
+  // Réponses au sondage, posé avant la validation de chaque vente
+  const SURVEY = { oui: 'Oui', non: 'Non', deja: 'Déjà posée' };
   const CANCELLED = 'annulee';
   const VALID = 'valide';
   const DAYS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
@@ -170,7 +172,8 @@
    * plus tard ne change pas l'historique. Le numéro (#154) est attribué au moment
    * de l'enregistrement en base.
    */
-  function buildSale({ id, eventId, cart, payment, now, deviceId }) {
+  function buildSale({ id, eventId, cart, payment, now, deviceId, survey }) {
+    if (survey != null && !SURVEY[survey]) throw new Error('Réponse au sondage invalide.');
     if (!eventId) throw new Error('Aucun événement ouvert.');
     if (!Array.isArray(cart) || cart.length === 0) throw new Error('Le panier est vide.');
     if (!PAYMENTS[payment]) throw new Error('Mode de paiement invalide.');
@@ -192,7 +195,8 @@
       lines,
       deviceId: deviceId || null,
       cancelledAt: null,
-      cancelReason: null
+      cancelReason: null,
+      survey: survey || null
     };
   }
 
@@ -320,8 +324,14 @@
       }
     }
 
-    const survey = { yes: 0, no: 0 };
-    for (const a of answers || []) {
+    // Réponses enregistrées avec les ventes valides (une correction ne compte donc pas deux fois)
+    const survey = { yes: 0, no: 0, already: 0 };
+    for (const s of valid) {
+      if (s.survey === 'oui') survey.yes++;
+      else if (s.survey === 'non') survey.no++;
+      else if (s.survey === 'deja') survey.already++;
+    }
+    for (const a of answers || []) { // réponses de la version précédente (sondage après la vente)
       if (a.answer === 'oui') survey.yes++;
       else if (a.answer === 'non') survey.no++;
     }
@@ -403,11 +413,12 @@
       bilan.push(['Coût théorique des ingrédients', eur(st.ingredientCost)]);
       bilan.push(['Marge brute estimée', eur(st.margin)]);
     }
-    if (event.surveyQuestion || st.survey.yes || st.survey.no) {
+    if (event.surveyQuestion || st.survey.yes || st.survey.no || st.survey.already) {
       const n = st.survey.yes + st.survey.no;
       bilan.push([], H(['Sondage', event.surveyQuestion || '']));
       bilan.push(['Réponses OUI', st.survey.yes, n ? { v: Math.round(st.survey.yes / n * 10000) / 10000, s: 'pct' } : null]);
       bilan.push(['Réponses NON', st.survey.no, n ? { v: Math.round(st.survey.no / n * 10000) / 10000, s: 'pct' } : null]);
+      bilan.push(['Question déjà posée (client revenu)', st.survey.already]);
     }
     bilan.push([], H(['Jour', 'Ventes', "Chiffre d'affaires", 'Espèces', 'Carte']));
     for (const d of st.days) {
@@ -416,7 +427,7 @@
     bilan.push([], H(['Produit', 'Total servi', 'Vendu seul', 'Dans les menus', "Chiffre d'affaires"]));
     for (const p of st.products) bilan.push([p.name, p.total, p.qty, p.inMenu, eur(p.revenue)]);
 
-    const ventes = [H(['N° vente', 'ID unique', 'Date', 'Heure', 'Événement', 'Montant', 'Mode de paiement', 'Statut', 'Nb articles', 'Annulée le', 'Raison annulation'])];
+    const ventes = [H(['N° vente', 'ID unique', 'Date', 'Heure', 'Événement', 'Montant', 'Mode de paiement', 'Statut', 'Nb articles', 'Annulée le', 'Raison annulation', 'Sondage'])];
     for (const s of sorted) {
       const d = new Date(s.createdAt);
       ventes.push([
@@ -424,7 +435,8 @@
         PAYMENTS[s.payment] || s.payment, status(s),
         s.lines.reduce((n, l) => n + l.qty, 0),
         s.cancelledAt ? { v: new Date(s.cancelledAt), s: 'datetime' } : null,
-        s.cancelReason || null
+        s.cancelReason || null,
+        s.survey ? SURVEY[s.survey] : null
       ]);
     }
 
@@ -475,7 +487,7 @@
   }
 
   return {
-    PAYMENTS, CANCELLED, VALID,
+    PAYMENTS, SURVEY, CANCELLED, VALID,
     uuid, indexById, roundQty,
     parseDecimal, parseEuros, formatEuros, formatEurosPrecise, formatQty, formatPct,
     localDay, dayToDate, formatDate, formatTime, formatDayLabel, formatPeriod, fileStamp, slug,
