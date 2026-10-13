@@ -90,6 +90,7 @@
     let html;
     try {
       if (name === 'ventes') html = await viewRecentSales();
+      else if (name === 'echange') html = await viewExchange();
       else if (name === 'vente') html = await viewSale(a, 'caisse');
       else if (name === 'admin') html = await viewAdmin(a || 'evenements', b);
       else return go('caisse');
@@ -125,7 +126,8 @@
     app.innerHTML = `<div class="caisse">
       <header class="topbar">
         <div class="ev">${esc(ev.name)}</div>
-        <button class="tb" data-action="go" data-to="ventes">Dernières ventes</button>
+        <button class="tb" data-action="go" data-to="ventes" aria-label="Dernières ventes"><span class="lg">Dernières ventes</span><span class="sm">Ventes</span></button>
+        <button class="tb" data-action="go" data-to="echange" aria-label="Échange d'argent">Échange €</button>
         <button class="tb" data-action="go" data-to="admin">⚙ Admin</button>
       </header>
       <main class="products" id="products"></main>
@@ -354,6 +356,61 @@
     S.payment = null;
     S.survey = sale.survey || null;
     toast(`Vente n°${sale.number} annulée : corrigez le panier puis validez.`, 'ok', 4000);
+    go('caisse');
+  }
+
+  // ---------- Échange d'argent (hors vente) ----------
+
+  function cashOpRow(o, canCancel) {
+    const off = L.isCancelled(o);
+    return `<div class="lrow ${off ? 'off' : ''}"><div class="grow">
+        <b>${L.formatTime(o.createdAt)}</b> · ${L.PAYMENTS[o.paidBy]} ${money(o.paid)} → <b>${money(o.cashOut)} en espèces</b>
+        ${off ? ' <span class="tag red">ANNULÉ</span>' : ''}
+        ${o.note || o.cancelReason ? `<div class="muted">${esc([o.note, o.cancelReason && 'Annulé : ' + o.cancelReason].filter(Boolean).join(' · '))}</div>` : ''}
+      </div>${!off && canCancel ? `<button class="btn sm danger" data-action="cancel-cashop" data-id="${o.id}">Annuler</button>` : ''}</div>`;
+  }
+
+  async function viewExchange() {
+    const ev = currentEvent();
+    if (!ev) return pageHeader("Échange d'argent", 'caisse') + '<div class="page"><p>Aucun événement ouvert.</p></div>';
+    const ops = (await DB.cashOpsByEvent(ev.id)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const t = L.computeStats({ sales: [], cashOps: ops }).till;
+    return pageHeader("Échange d'argent", 'caisse') + `<div class="page">
+      <form class="form card" data-form="cashop" data-id="${L.uuid()}">
+        <p class="muted">Hors vente, non compté dans le chiffre d'affaires. Exemple : le client paie 20 € par carte et vous lui donnez 20 € en espèces (pour le crêpier).</p>
+        <div class="lbl">Le client paie</div>
+        <div class="seg">
+          <label class="segopt"><input type="radio" name="paidBy" value="carte" checked><span>CARTE</span></label>
+          <label class="segopt"><input type="radio" name="paidBy" value="especes"><span>ESPÈCES</span></label>
+        </div>
+        <label>Montant payé (€)<input name="paid" inputmode="decimal" autocomplete="off" required placeholder="ex. 20"></label>
+        <div class="quick">${[5, 10, 20, 50].map(v => `<button type="button" class="btn" data-action="cash-quick" data-v="${v}">${v} €</button>`).join('')}</div>
+        <label>Espèces données au client (€)<input name="cashOut" inputmode="decimal" autocomplete="off" required placeholder="ex. 20"></label>
+        <label>Note (facultatif)<input name="note" maxlength="60" placeholder="ex. crêpier"></label>
+        <button class="validate" type="submit">VALIDER L'ÉCHANGE</button>
+      </form>
+      <div class="card"><h2>Échanges de l'événement</h2>
+        <p>${t.opsCount} échange(s) : <b>${money(t.cashOut)}</b> d'espèces données
+          ${t.cardIn ? ` · ${money(t.cardIn)} payés par carte` : ''}${t.cashIn ? ` · ${money(t.cashIn)} reçus en espèces` : ''}</p>
+        ${ops.map(o => cashOpRow(o, !ev.archived)).join('') || '<p class="muted">Aucun échange pour le moment.</p>'}
+      </div>
+    </div>`;
+  }
+
+  async function saveCashOp(f, fd) {
+    const ev = currentEvent();
+    if (!ev) throw new Error('Aucun événement ouvert.');
+    const op = L.buildCashOp({
+      id: f.dataset.id, eventId: ev.id, paidBy: fd.get('paidBy'), deviceId: S.settings.deviceId,
+      paid: L.parseEuros(fd.get('paid')), cashOut: L.parseEuros(fd.get('cashOut')), note: String(fd.get('note') || '')
+    });
+    try {
+      await DB.addCashOp(op);
+    } catch (e) {
+      if (!(e && e.name === 'ConstraintError')) throw e; // déjà enregistré (double appui)
+      return;
+    }
+    toast(`✓ Échange enregistré : ${money(op.paid)} ${op.paidBy === 'carte' ? 'par carte' : 'en espèces'} → ${money(op.cashOut)} en espèces`, 'ok', 3500);
     go('caisse');
   }
 
@@ -755,8 +812,9 @@
   async function viewBilan(eventId) {
     const ev = pickEvent(eventId);
     if (!ev) return noEvent;
-    const [sales, answers] = await Promise.all([DB.salesByEvent(ev.id), DB.answersByEvent(ev.id)]);
-    const st = L.computeStats({ sales, products: S.products, ingredients: S.ingredients, initialStock: ev.initialStock, answers });
+    const [sales, answers, cashOps] = await Promise.all([DB.salesByEvent(ev.id), DB.answersByEvent(ev.id), DB.cashOpsByEvent(ev.id)]);
+    const st = L.computeStats({ sales, products: S.products, ingredients: S.ingredients, initialStock: ev.initialStock, answers, cashOps });
+    const tl = st.till;
     const nAns = st.survey.yes + st.survey.no;
     const ings = st.ingredients.filter(r => r.consumed > 0 || r.initialStock != null);
     const kpi = (k, v, sub) => `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="muted">${sub}</div>` : ''}</div>`;
@@ -770,6 +828,15 @@
         ${st.hasCostData ? kpi('Marge brute estimée', money(st.margin), `coût ingrédients ${money(st.ingredientCost)}`) : ''}
       </div>
       <div class="toolbar"><button class="btn primary" data-action="export-xlsx" data-id="${ev.id}">EXPORTER vers Excel</button></div>
+      <div class="card"><h2>Suivi de l'argent</h2><div class="tscroll"><table class="t">
+        <tr><td>Espèces : ventes</td><td class="n">${money(tl.cashSales)}</td></tr>
+        ${tl.cashIn ? `<tr><td>Espèces reçues (échanges)</td><td class="n">+ ${money(tl.cashIn)}</td></tr>` : ''}
+        <tr><td>Espèces données (échanges)</td><td class="n">− ${money(tl.cashOut)}</td></tr>
+        <tr class="tot"><td>Espèces à ajouter au fond de caisse</td><td class="n ${tl.cashBalance < 0 ? 'neg' : ''}">${money(tl.cashBalance)}</td></tr>
+        <tr><td>Carte : ventes</td><td class="n">${money(tl.cardSales)}</td></tr>
+        <tr><td>Carte : payée lors des échanges</td><td class="n">+ ${money(tl.cardIn)}</td></tr>
+        <tr class="tot"><td>Total carte (terminal)</td><td class="n">${money(tl.cardTotal)}</td></tr>
+      </table></div><p class="muted">${tl.opsCount} échange(s) d'argent. En fin de journée : espèces comptées = fond de caisse de départ + « espèces à ajouter » ; total carte = total du terminal.</p></div>
       ${st.days.length > 1 ? `<div class="card"><h2>Par jour</h2><div class="tscroll"><table class="t">
         <tr><th>Jour</th><th class="n">Ventes</th><th class="n">Espèces</th><th class="n">Carte</th><th class="n">CA</th></tr>
         ${st.days.map(d => `<tr><td>${L.formatDayLabel(d.day)}</td><td class="n">${d.count}</td><td class="n">${money(d.especes || 0)}</td><td class="n">${money(d.carte || 0)}</td><td class="n">${money(d.revenue)}</td></tr>`).join('')}
@@ -826,7 +893,7 @@
     if (!ev) return;
     const now = new Date();
     const sheets = L.buildExportSheets({
-      event: ev, sales: await DB.salesByEvent(ev.id), answers: await DB.answersByEvent(ev.id), products: S.products,
+      event: ev, sales: await DB.salesByEvent(ev.id), answers: await DB.answersByEvent(ev.id), cashOps: await DB.cashOpsByEvent(ev.id), products: S.products,
       categories: S.categories, ingredients: S.ingredients, now
     });
     download(`caisse_${L.slug(ev.name)}_${L.fileStamp(now)}.xlsx`,
@@ -942,6 +1009,21 @@
     pay: el => { S.payment = el.dataset.pay; updateCart(); },
     validate: validateSale,
     'cancel-sale': el => cancelSale(el.dataset.id),
+    'cancel-cashop': async el => {
+      const op = await DB.get('cashops', el.dataset.id);
+      if (!op || L.isCancelled(op)) return;
+      const reason = prompt(`Annuler l'échange de ${L.formatTime(op.createdAt)} (${L.PAYMENTS[op.paidBy]} ${money(op.paid)} → ${money(op.cashOut)} en espèces) ?\n\nIl restera visible comme ANNULÉ.\nRaison (facultatif) :`, '');
+      if (reason === null) return;
+      await DB.put('cashops', L.cancelSale(op, reason));
+      toast('Échange annulé.');
+      render();
+    },
+    'cash-quick': el => {
+      const f = el.closest('form');
+      const euros = el.dataset.v + ',00';
+      f.elements.paid.value = euros;
+      if (!f.elements.cashOut.dataset.touched) f.elements.cashOut.value = euros;
+    },
     'correct-sale': el => correctSale(el.dataset.id),
 
     // PIN
@@ -1076,6 +1158,7 @@
     product: saveProduct,
     ingredient: saveIngredient,
     pin: savePin,
+    cashop: saveCashOp,
     category: async (f, fd) => {
       const name = String(fd.get('name') || '').trim();
       if (!name) return;
@@ -1125,6 +1208,10 @@
     const f = e.target.closest('form[data-form]');
     if (f && f.dataset.form === 'product') updateCostPreview(f);
     if (f && f.dataset.form === 'ingredient') updateUnitCost(f);
+    if (f && f.dataset.form === 'cashop') {
+      if (e.target.name === 'cashOut') e.target.dataset.touched = '1';
+      if (e.target.name === 'paid' && !f.elements.cashOut.dataset.touched) f.elements.cashOut.value = e.target.value;
+    }
   });
   document.addEventListener('change', e => {
     const f = e.target.closest('form[data-form="product"]');

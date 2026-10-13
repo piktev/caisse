@@ -200,7 +200,25 @@
     };
   }
 
-  /** Une vente annulée est conservée et marquée, jamais supprimée. */
+  /**
+   * Échange d'argent hors vente : le client paie `paid` (par carte ou en espèces) et
+   * reçoit `cashOut` en espèces. Ex. : 20 € par carte → 20 € en espèces pour le crêpier.
+   * Ne compte pas dans le chiffre d'affaires, seulement dans le suivi de l'argent.
+   */
+  function buildCashOp({ id, eventId, paidBy, paid, cashOut, note, now, deviceId }) {
+    if (!eventId) throw new Error('Aucun événement ouvert.');
+    if (!PAYMENTS[paidBy]) throw new Error('Choisissez comment le client paie : carte ou espèces.');
+    if (!Number.isInteger(paid) || paid <= 0) throw new Error('Montant payé invalide (ex. 20).');
+    if (!Number.isInteger(cashOut) || cashOut <= 0) throw new Error('Montant donné en espèces invalide (ex. 20).');
+    if (cashOut > paid) throw new Error('Les espèces données ne peuvent pas dépasser le montant payé.');
+    return {
+      id: id || uuid(), eventId, createdAt: (now || new Date()).toISOString(),
+      paidBy, paid, cashOut, note: (note || '').trim() || null,
+      status: VALID, cancelledAt: null, cancelReason: null, deviceId: deviceId || null
+    };
+  }
+
+  /** Une vente (ou un échange) annulée est conservée et marquée, jamais supprimée. */
   function cancelSale(sale, reason, now) {
     if (sale.status === CANCELLED) return sale;
     return {
@@ -272,7 +290,7 @@
    * La consommation théorique d'ingrédients est calculée avec les recettes ACTUELLES
    * (ainsi, une recette saisie ou corrigée après coup est prise en compte), menus compris.
    */
-  function computeStats({ sales, products, ingredients, initialStock, answers }) {
+  function computeStats({ sales, products, ingredients, initialStock, answers, cashOps }) {
     const prodById = indexById(products);
     const ingById = indexById(ingredients);
     const stock = initialStock || {};
@@ -371,8 +389,28 @@
       hasCostData,
       ingredientCost: hasCostData ? ingredientCost : null,
       margin: hasCostData ? revenue - ingredientCost : null,
-      survey
+      survey,
+      till: tillStats(payments, cashOps)
     };
+  }
+
+  /**
+   * Suivi de l'argent : ventes + échanges hors vente.
+   * cashBalance = espèces qui doivent s'ajouter au fond de caisse ; cardTotal = total attendu sur le terminal.
+   */
+  function tillStats(payments, cashOps) {
+    const ops = (cashOps || []).filter(o => !isCancelled(o));
+    const t = {
+      cashSales: payments.especes.amount, cardSales: payments.carte.amount,
+      opsCount: ops.length, cardIn: 0, cashIn: 0, cashOut: 0
+    };
+    for (const o of ops) {
+      if (o.paidBy === 'carte') t.cardIn += o.paid; else t.cashIn += o.paid;
+      t.cashOut += o.cashOut;
+    }
+    t.cashBalance = t.cashSales + t.cashIn - t.cashOut;
+    t.cardTotal = t.cardSales + t.cardIn;
+    return t;
   }
 
   // ---------- Export (structure des feuilles Excel) ----------
@@ -381,8 +419,8 @@
    * Prépare les feuilles du classeur Excel d'un événement.
    * Format de cellule : valeur simple, ou { v, s } avec s = bold|money|money4|date|time|datetime|pct.
    */
-  function buildExportSheets({ event, sales, products, categories, ingredients, answers, now }) {
-    const st = computeStats({ sales, products, ingredients, initialStock: event.initialStock, answers });
+  function buildExportSheets({ event, sales, products, categories, ingredients, answers, cashOps, now }) {
+    const st = computeStats({ sales, products, ingredients, initialStock: event.initialStock, answers, cashOps });
     const catById = indexById(categories);
     const ingById = indexById(ingredients);
     const prodById = indexById(products);
@@ -413,6 +451,16 @@
       bilan.push(['Coût théorique des ingrédients', eur(st.ingredientCost)]);
       bilan.push(['Marge brute estimée', eur(st.margin)]);
     }
+    const tl = st.till;
+    bilan.push([], H(["Suivi de l'argent", 'Montant']),
+      ['Espèces : ventes', eur(tl.cashSales)],
+      ['Espèces : reçues lors des échanges', eur(tl.cashIn)],
+      ['Espèces : données lors des échanges', eur(-tl.cashOut)],
+      [B('= Espèces à ajouter au fond de caisse'), { v: Math.round(tl.cashBalance) / 100, s: 'money' }],
+      ['Carte : ventes', eur(tl.cardSales)],
+      ['Carte : payée lors des échanges', eur(tl.cardIn)],
+      [B('= Total carte (terminal)'), { v: Math.round(tl.cardTotal) / 100, s: 'money' }],
+      ["Nombre d'échanges", tl.opsCount]);
     if (event.surveyQuestion || st.survey.yes || st.survey.no || st.survey.already) {
       const n = st.survey.yes + st.survey.no;
       bilan.push([], H(['Sondage', event.surveyQuestion || '']));
@@ -468,6 +516,15 @@
       ]);
     }
 
+    const echanges = [H(['Date', 'Heure', 'Payé par', 'Montant payé', 'Espèces données', 'Note', 'Statut', 'Annulé le', 'Raison annulation', 'ID unique'])];
+    for (const o of [...(cashOps || [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+      const d = new Date(o.createdAt);
+      echanges.push([
+        { v: d, s: 'date' }, { v: d, s: 'time' }, PAYMENTS[o.paidBy] || o.paidBy, eur(o.paid), eur(o.cashOut), o.note,
+        isCancelled(o) ? 'ANNULÉ' : 'Valide', o.cancelledAt ? { v: new Date(o.cancelledAt), s: 'datetime' } : null, o.cancelReason, o.id
+      ]);
+    }
+
     const ingr = [H(['Ingrédient', 'Unité', 'Stock initial', 'Consommation théorique', 'Stock théorique', "Prix d'achat", 'Quantité achetée', 'Coût unitaire', 'Coût de la consommation'])];
     for (const r of st.ingredients) {
       const ing = ingById[r.ingredientId];
@@ -482,7 +539,8 @@
       { name: 'Ventes', rows: ventes, widths: [10, 38, 12, 8, 28, 12, 16, 10, 11, 17, 30], freeze: true },
       { name: 'Lignes de vente', rows: lignes, widths: [10, 38, 12, 8, 22, 18, 10, 13, 12, 12, 50], freeze: true },
       { name: 'Produits', rows: produits, widths: [24, 18, 13, 15, 13, 10, 60, 30, 7, 12, 12, 15, 17], freeze: true },
-      { name: 'Ingrédients', rows: ingr, widths: [24, 12, 13, 22, 15, 13, 17, 13, 22], freeze: true }
+      { name: 'Ingrédients', rows: ingr, widths: [24, 12, 13, 22, 15, 13, 17, 13, 22], freeze: true },
+      { name: "Échanges d'argent", rows: echanges, widths: [12, 8, 10, 14, 16, 24, 9, 17, 24, 38], freeze: true }
     ];
   }
 
@@ -492,7 +550,7 @@
     parseDecimal, parseEuros, formatEuros, formatEurosPrecise, formatQty, formatPct,
     localDay, dayToDate, formatDate, formatTime, formatDayLabel, formatPeriod, fileStamp, slug,
     isMenu, lineKey, cartAdd, cartChange, cartTotal, lineToCart, choicesText,
-    buildSale, cancelSale, isCancelled,
+    buildSale, buildCashOp, cancelSale, isCancelled,
     ingredientUnitCost, productCost, productMargin, recipeText, menuText,
     computeStats, buildExportSheets
   };

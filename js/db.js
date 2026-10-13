@@ -8,7 +8,9 @@
  *                  menu?: [{ label, options: [productId] }] }   (menu : le client choisit une option par étape)
  *   ingredients  { id, name, unit, purchasePrice (centimes|null), purchaseQty (nombre|null) }
  *   sales        { id, eventId, number, createdAt, total, payment, status, lines: [...], deviceId, cancelledAt, cancelReason }
- *   answers      { id, eventId, saleId, answer ('oui'|'non'), question, createdAt }   (sondage)
+ *   answers      { id, eventId, saleId, answer ('oui'|'non'), question, createdAt }   (sondage, ancienne version)
+ *   cashops      { id, eventId, createdAt, paidBy ('carte'|'especes'), paid, cashOut, note, status, cancelledAt, cancelReason, deviceId }
+ *                  (échanges d'argent hors vente : ex. 20 € payés par carte contre 20 € en espèces)
  *   settings     { key, value }   (currentEventId, pin, deviceId, lastBackupAt)
  *
  * Une vente et ses lignes sont écrites dans UNE SEULE transaction : soit tout est
@@ -19,8 +21,8 @@
   'use strict';
 
   const NAME = 'caisse-buvette';
-  const VERSION = 2; // v2 : ajout du magasin « answers » (sondage)
-  const STORES = ['events', 'categories', 'products', 'ingredients', 'sales', 'answers', 'settings'];
+  const VERSION = 3; // v2 : magasin « answers » (sondage) ; v3 : magasin « cashops » (échanges d'argent)
+  const STORES = ['events', 'categories', 'products', 'ingredients', 'sales', 'answers', 'cashops', 'settings'];
   const APP_ID = 'caisse-buvette';
   const BACKUP_FORMAT = 1;
   let dbPromise = null;
@@ -37,6 +39,9 @@
         }
         if (!db.objectStoreNames.contains('sales')) {
           db.createObjectStore('sales', { keyPath: 'id' }).createIndex('eventId', 'eventId');
+        }
+        if (!db.objectStoreNames.contains('cashops')) {
+          db.createObjectStore('cashops', { keyPath: 'id' }).createIndex('eventId', 'eventId');
         }
         if (!db.objectStoreNames.contains('answers')) {
           db.createObjectStore('answers', { keyPath: 'id' }).createIndex('eventId', 'eventId');
@@ -110,6 +115,17 @@
     r.onsuccess = () => done(r.result);
   });
 
+  const cashOpsByEvent = eventId => run(['cashops'], 'readonly', (tx, done) => {
+    const r = tx.objectStore('cashops').index('eventId').getAll(eventId);
+    r.onsuccess = () => done(r.result);
+  });
+
+  /** `add` : un double envoi du même échange (même id) est refusé au lieu d'être compté deux fois. */
+  const addCashOp = op => run(['cashops'], 'readwrite', (tx, done) => {
+    tx.objectStore('cashops').add(op);
+    done(op);
+  });
+
   const answersByEvent = eventId => run(['answers'], 'readonly', (tx, done) => {
     const r = tx.objectStore('answers').index('eventId').getAll(eventId);
     r.onsuccess = () => done(r.result);
@@ -149,9 +165,9 @@
   });
 
   /** Supprime un événement, ses ventes et ses réponses au sondage (une seule transaction). */
-  const deleteEvent = eventId => run(['events', 'sales', 'answers'], 'readwrite', tx => {
+  const deleteEvent = eventId => run(['events', 'sales', 'answers', 'cashops'], 'readwrite', tx => {
     tx.objectStore('events').delete(eventId);
-    for (const store of ['sales', 'answers']) {
+    for (const store of ['sales', 'answers', 'cashops']) {
       const r = tx.objectStore(store).index('eventId').openKeyCursor(IDBKeyRange.only(eventId));
       r.onsuccess = () => {
         const cur = r.result;
@@ -232,7 +248,7 @@
   }
 
   root.DB = {
-    open, getAll, get, put, putMany, putRecords, del, salesByEvent, answersByEvent, countSalesByEvent, addSale,
+    open, getAll, get, put, putMany, putRecords, del, salesByEvent, answersByEvent, cashOpsByEvent, addCashOp, countSalesByEvent, addSale,
     isProductSold, deleteEvent, getSettings, setSetting, exportAll, checkBackup, importAll, clearAll
   };
 })(self);

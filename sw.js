@@ -5,7 +5,7 @@
  * Lors d'une mise à jour des fichiers de l'application, changer VERSION pour que
  * les appareils téléchargent la nouvelle version (au lancement suivant).
  */
-const VERSION = 'caisse-v3';
+const VERSION = 'caisse-v4';
 const FILES = [
   './',
   './index.html',
